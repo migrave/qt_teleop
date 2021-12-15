@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+    <node pkg="joy" type="joy_node" name="joy" output="screen">
+        <param name="dev" value="/dev/input/js1" />
+    </node>
+
+    <node pkg="qt_teleop" type="joy" name="qt_teleop" output="screen">
+        <param name="joy_topic" value="/joy" />
+        <param name="joint_states" value="/qt_robot/joints/state" />
+        <param name="right_arm_topic" value="/qt_robot/right_arm_position/command" />
+        <param name="left_arm_topic" value="/qt_robot/left_arm_position/command" />
+        <param name="head_topic" value="/qt_robot/head_position/command" />
+
+    </node>
+</launch>

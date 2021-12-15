@@ -1,0 +1,153 @@
+#!/usr/bin/env python
+import rospy
+from sensor_msgs.msg import Joy, JointState
+from std_msgs.msg import Float64MultiArray
+
+class JoyButtons(object):
+    def __init__(self, button_list: list):
+        self.a = button_list[1]
+        self.b = button_list[2]
+        self.x = button_list[0]
+        self.y = button_list[3]
+        self.lb = button_list[4]
+        self.rb = button_list[5]
+        self.lt = button_list[6]
+        self.rt = button_list[7]
+
+class JoyAxes(object):
+    def __init__(self, axes_list: list):
+        self.xl = axes_list[0]
+        self.yl = axes_list[1]
+        self.xr = axes_list[2]
+        self.yr = axes_list[3]
+        self.cross_x = axes_list[-2]
+        self.cross_y = axes_list[-1]
+
+class Head(object):
+    def __init__(self, position_list):
+        self.pitch = position_list[0]
+        self.yaw = position_list[1]
+
+class Arm(object):
+    def __init__(self, position_list: list, mode: str):
+        if mode=='left':
+            self.elbow_roll = position_list[2]
+            self.shoulder_pitch = position_list[3]
+            self.shoulder_roll = position_list[4]
+        elif mode=='right':
+            self.elbow_roll = position_list[5]
+            self.shoulder_pitch = position_list[6]
+            self.shoulder_roll = position_list[7]
+        else:
+            raise NotImplementedError
+
+class JoyNode(object):
+    def __init__(self):
+        self._joy_topic = rospy.get_param('~joy_topic', '/joy')
+        self._joint_state_topic = rospy.get_param('~joints_state', '/qt_robot/joints/state')
+      
+        self._right_arm_topic = rospy.get_param('~right_arm_topic', '/qt_robot/right_arm_position/command')
+        self._left_arm_topic = rospy.get_param('~left_arm_topic', '/qt_robot/left_arm_position/command')
+        self._head_topic = rospy.get_param('~head_topic', '/qt_robot/head_position/command')
+
+        self._joy_sub = rospy.Subscriber(self._joy_topic, Joy, self.joy_cmd_cb)
+        self._joint_state_sub = rospy.Subscriber(self._joint_state_topic, JointState, self.joint_state_cb)
+
+        self._right_pub = rospy.Publisher(self._right_arm_topic, Float64MultiArray, queue_size=1)
+        self._left_pub = rospy.Publisher(self._left_arm_topic, Float64MultiArray, queue_size=1)
+        self._head_pub = rospy.Publisher(self._head_topic, Float64MultiArray, queue_size=1)
+
+        # wtime_begin = rospy.get_time()
+        # while (self.right_pub.get_num_connections() == 0 and self.left_pub.get_num_connections() == 0) :
+        #     rospy.loginfo("waiting for subscriber connections...")
+        #     if rospy.get_time() - wtime_begin > 10.0:
+        #         rospy.logerr("Timeout while waiting for subscribers connection!")
+        #         sys.exit()
+        #     rospy.sleep(1)
+
+        self._last_joy_msg = None
+        self._last_joy_buttons = None
+        self._last_joy_axes = None
+        self._last_joint_msg = None
+        self._last_head_state = None
+        self._last_left_arm_state = None
+        self._last_right_arm_state = None
+        self._receive_joint_pos = True
+
+    def get_coefficients(self, min_val, max_val):
+        # get coefficient for the linear function for the domain [-1, 1], which is joypad range
+        if max_val<=min_val:
+            raise ValueError("max_val has to be greater than min_val")
+        
+        # b = (max + min)/2
+        b = (max_val+ min_val)/2.
+        # a = min - b
+        a = min_val - b
+        
+        return a, b
+
+    def run(self):
+
+        loop_rate = rospy.Rate(5)
+        while not rospy.is_shutdown():
+            if self._last_joy_msg and self._last_joint_msg:
+                ref = Float64MultiArray()
+
+                if self._last_joy_buttons.rb and self._last_joy_buttons.lb:
+
+                    a, b = self.get_coefficients(-13, 18)
+                    head_yaw = a*self._last_joy_axes.yl + b
+                    
+                    a, b = self.get_coefficients(-55, 55)
+                    head_pitch = a*self._last_joy_axes.xl + b
+                    
+                    ref.data = [head_pitch, head_yaw]
+                    self._head_pub.publish(ref)
+
+                else: 
+                    if self._last_joy_buttons.lb:
+                        a, b = self.get_coefficients(-131., 130.)
+                        shoulder_pitch = -a*self._last_joy_axes.yl + b
+                        
+                        a, b = self.get_coefficients(-73., 5.)
+                        shoulder_roll = -a*self._last_joy_axes.xl + b
+                        
+                        a, b = self.get_coefficients(-73., -5.)
+                        elbow_roll = -a*self._last_joy_axes.xr + b
+
+                        ref.data = [shoulder_pitch, shoulder_roll, elbow_roll]
+                        self._right_pub.publish(ref)
+
+                    elif self._last_joy_buttons.rb:
+                        a, b = self.get_coefficients(-131., 130.)
+                        shoulder_pitch = a*self._last_joy_axes.yl + b
+                        
+                        a, b = self.get_coefficients(-73., 5.)
+                        shoulder_roll = a*self._last_joy_axes.xl + b
+                        
+                        a, b = self.get_coefficients(-73., -5.)
+                        elbow_roll = a*self._last_joy_axes.xr + b
+
+                        ref.data = [shoulder_pitch, shoulder_roll, elbow_roll]
+                        self._left_pub.publish(ref)
+
+            loop_rate.sleep()
+
+    def joint_state_cb(self, joint_state):
+        if self._receive_joint_pos:
+            self._last_joint_msg = joint_state
+            self._last_head_state = Head(joint_state.position)
+            self._last_left_arm_state = Arm(joint_state.position, 'left')
+            self._last_right_arm_state = Arm(joint_state.position, 'right')
+            self._receive_joint_pos = False
+
+    def joy_cmd_cb(self, joy_cmd):
+            self._last_joy_msg = joy_cmd
+            self._last_joy_buttons = JoyButtons(joy_cmd.buttons)
+            self._last_joy_axes = JoyAxes(joy_cmd.axes)
+
+
+if __name__ == '__main__':
+    rospy.init_node('ropod_joy')
+    joy = JoyNode()
+    joy.run()
