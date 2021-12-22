@@ -1,10 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import rospy
+import copy
 from sensor_msgs.msg import Joy, JointState
 from std_msgs.msg import Float64MultiArray
+from typing import List
 
 class JoyButtons(object):
-    def __init__(self, button_list: list):
+    def __init__(self, button_list: List[float]):
         self.a = button_list[1]
         self.b = button_list[2]
         self.x = button_list[0]
@@ -15,7 +17,7 @@ class JoyButtons(object):
         self.rt = button_list[7]
 
 class JoyAxes(object):
-    def __init__(self, axes_list: list):
+    def __init__(self, axes_list: List[float]):
         self.xl = axes_list[0]
         self.yl = axes_list[1]
         self.xr = axes_list[2]
@@ -24,12 +26,16 @@ class JoyAxes(object):
         self.cross_y = axes_list[-1]
 
 class Head(object):
-    def __init__(self, position_list):
+    def __init__(self, position_list: List[float]):
         self.pitch = position_list[0]
         self.yaw = position_list[1]
+    
+    def __str__(self):
+        return 'yaw: {0}\npitch: {1}'.format(self.yaw, self.pitch)
+
 
 class Arm(object):
-    def __init__(self, position_list: list, mode: str):
+    def __init__(self, position_list: List[float], mode: str):
         if mode=='left':
             self.elbow_roll = position_list[2]
             self.shoulder_pitch = position_list[3]
@@ -40,6 +46,11 @@ class Arm(object):
             self.shoulder_roll = position_list[7]
         else:
             raise NotImplementedError
+
+    def __str__(self):
+        return 'elbow_roll: {0}\nshoulder_pitch: {1}\nshoulder_roll: {2}'.format(self.elbow_roll,
+                                                                                 self.shoulder_pitch,
+                                                                                 self.shoulder_roll)
 
 class JoyNode(object):
     def __init__(self):
@@ -72,79 +83,133 @@ class JoyNode(object):
         self._last_head_state = None
         self._last_left_arm_state = None
         self._last_right_arm_state = None
+        self._head_state_backup = None
+        self._left_arm_state_backup = None
+        self._right_arm_state_backup = None 
         self._receive_joint_pos = True
+        self._moving = False
 
-    def get_coefficients(self, min_val, max_val):
+    def map_value(self, min_val: float, max_val: float, middle_point: float, value_to_map: float, invert: bool=False):
         # get coefficient for the linear function for the domain [-1, 1], which is joypad range
         if max_val<=min_val:
             raise ValueError("max_val has to be greater than min_val")
         
-        # b = (max + min)/2
-        b = (max_val+ min_val)/2.
-        # a = min - b
-        a = min_val - b
+        b = middle_point
+
+        if (value_to_map > 0 and not invert) or (value_to_map < 0 and invert):
+            a = max_val - b
+            if invert:
+                mapped_value = -a*value_to_map + b
+            else:
+                mapped_value = a*value_to_map + b
+
+        elif (value_to_map < 0 and not invert) or (value_to_map > 0 and invert):
+            a = -min_val + b
+
+            if invert:
+                mapped_value = -a*value_to_map + b
+            else:
+                mapped_value = a*value_to_map + b
         
-        return a, b
+        else:
+            return middle_point
+
+        if mapped_value>max_val:
+            return max_val
+        elif mapped_value<min_val:
+            return min_val
+        else:
+            return mapped_value
 
     def run(self):
 
         loop_rate = rospy.Rate(5)
         while not rospy.is_shutdown():
-            if self._last_joy_msg and self._last_joint_msg:
-                ref = Float64MultiArray()
+            if self._last_joy_msg is None or self._last_joint_msg is None:
+                continue
 
-                if self._last_joy_buttons.rb and self._last_joy_buttons.lb:
-
-                    a, b = self.get_coefficients(-13, 18)
-                    head_yaw = a*self._last_joy_axes.yl + b
+            ref = Float64MultiArray()
+        
+            if (self._last_joy_buttons.rb or self._last_joy_buttons.lb) and \
+                (self._last_joy_axes.yl!=0 or self._last_joy_axes.xl!=0 or self._last_joy_axes.xr!=0):
+                self._moving = True
+            else:
+                if self._moving:
                     
-                    a, b = self.get_coefficients(-55, 55)
-                    head_pitch = a*self._last_joy_axes.xl + b
-                    
-                    ref.data = [head_pitch, head_yaw]
-                    self._head_pub.publish(ref)
-
-                else: 
-                    if self._last_joy_buttons.lb:
-                        a, b = self.get_coefficients(-131., 130.)
-                        shoulder_pitch = -a*self._last_joy_axes.yl + b
-                        
-                        a, b = self.get_coefficients(-73., 5.)
-                        shoulder_roll = -a*self._last_joy_axes.xl + b
-                        
-                        a, b = self.get_coefficients(-73., -5.)
-                        elbow_roll = -a*self._last_joy_axes.xr + b
-
-                        ref.data = [shoulder_pitch, shoulder_roll, elbow_roll]
+                    if self._last_joy_buttons.rb and not self._last_joy_buttons.lb:
+                        self._last_right_arm_state = copy.deepcopy(self._right_arm_state_backup)
+                        ref.data = [self._last_right_arm_state.shoulder_pitch, 
+                                    self._last_right_arm_state.shoulder_roll, 
+                                    self._last_right_arm_state.elbow_roll]
                         self._right_pub.publish(ref)
 
-                    elif self._last_joy_buttons.rb:
-                        a, b = self.get_coefficients(-131., 130.)
-                        shoulder_pitch = a*self._last_joy_axes.yl + b
-                        
-                        a, b = self.get_coefficients(-73., 5.)
-                        shoulder_roll = a*self._last_joy_axes.xl + b
-                        
-                        a, b = self.get_coefficients(-73., -5.)
-                        elbow_roll = a*self._last_joy_axes.xr + b
-
-                        ref.data = [shoulder_pitch, shoulder_roll, elbow_roll]
+                    if self._last_joy_buttons.lb and not self._last_joy_buttons.rb:
+                        self._last_left_arm_state = copy.deepcopy(self._left_arm_state_backup)
+                        ref.data = [self._last_left_arm_state.shoulder_pitch, 
+                                    self._last_left_arm_state.shoulder_roll, 
+                                    self._last_left_arm_state.elbow_roll]
                         self._left_pub.publish(ref)
+                    
+                    if self._last_joy_buttons.rb and self._last_joy_buttons.lb:
+                        self._last_head_state = copy.deepcopy(self._head_state_backup)
+                        ref.data = [self._last_head_state.pitch, 
+                                    self._last_head_state.yaw]
+                        self._left_pub.publish(ref)
+                    self._moving = False
+                continue
+
+            if self._last_joy_buttons.rb and self._last_joy_buttons.lb:
+                head_yaw = self._last_head_state.yaw
+                head_pitch = self._last_head_state.pitch
+                
+                head_yaw = self.map_value(-13, 18, head_yaw, self._last_joy_axes.yl, invert=True)
+                head_pitch = self.map_value(-55, 55, head_pitch, self._last_joy_axes.xl)
+                ref.data = [head_pitch, head_yaw]
+                self._head_pub.publish(ref)
+
+            elif self._last_joy_buttons.rb or self._last_joy_buttons.lb:
+                if self._last_joy_buttons.rb:
+                    elbow_roll = self._last_right_arm_state.elbow_roll
+                    shoulder_pitch = self._last_right_arm_state.shoulder_pitch
+                    shoulder_roll = self._last_right_arm_state.shoulder_roll
+                    
+                    shoulder_pitch = self.map_value(-131, 130, shoulder_pitch, self._last_joy_axes.yl)
+                    shoulder_roll = self.map_value(-73, 5, shoulder_roll, self._last_joy_axes.xl, invert=True)
+                    elbow_roll = self.map_value(-73, -5, elbow_roll, self._last_joy_axes.xr, invert=True)
+                    ref.data = [shoulder_pitch, shoulder_roll, elbow_roll]
+                    self._right_pub.publish(ref)
+
+                if self._last_joy_buttons.lb:
+                    elbow_roll = self._last_left_arm_state.elbow_roll
+                    shoulder_pitch = self._last_left_arm_state.shoulder_pitch
+                    shoulder_roll = self._last_left_arm_state.shoulder_roll
+                    
+                    shoulder_pitch = self.map_value(-131, 130, shoulder_pitch, self._last_joy_axes.yl, invert=True)
+                    shoulder_roll = self.map_value(-73, 5, shoulder_roll, self._last_joy_axes.xl)
+                    elbow_roll = self.map_value(-73, -5, elbow_roll, self._last_joy_axes.xr)
+
+                    ref.data = [shoulder_pitch, shoulder_roll, elbow_roll]
+                    self._left_pub.publish(ref)
 
             loop_rate.sleep()
 
-    def joint_state_cb(self, joint_state):
+    def joint_state_cb(self, joint_state: JointState):
         if self._receive_joint_pos:
             self._last_joint_msg = joint_state
             self._last_head_state = Head(joint_state.position)
             self._last_left_arm_state = Arm(joint_state.position, 'left')
             self._last_right_arm_state = Arm(joint_state.position, 'right')
-            self._receive_joint_pos = False
+        
+        self._receive_joint_pos = False
 
-    def joy_cmd_cb(self, joy_cmd):
-            self._last_joy_msg = joy_cmd
-            self._last_joy_buttons = JoyButtons(joy_cmd.buttons)
-            self._last_joy_axes = JoyAxes(joy_cmd.axes)
+        self._head_state_backup = Head(joint_state.position)
+        self._left_arm_state_backup = Arm(joint_state.position, 'left')
+        self._right_arm_state_backup = Arm(joint_state.position, 'right')
+
+    def joy_cmd_cb(self, joy_cmd: Joy):
+        self._last_joy_msg = joy_cmd
+        self._last_joy_buttons = JoyButtons(joy_cmd.buttons)
+        self._last_joy_axes = JoyAxes(joy_cmd.axes)
 
 
 if __name__ == '__main__':
