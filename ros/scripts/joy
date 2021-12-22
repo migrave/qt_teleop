@@ -2,7 +2,7 @@
 import rospy
 import copy
 from sensor_msgs.msg import Joy, JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String
 from typing import List
 
 class JoyButtons(object):
@@ -60,21 +60,15 @@ class JoyNode(object):
         self._right_arm_topic = rospy.get_param('~right_arm_topic', '/qt_robot/right_arm_position/command')
         self._left_arm_topic = rospy.get_param('~left_arm_topic', '/qt_robot/left_arm_position/command')
         self._head_topic = rospy.get_param('~head_topic', '/qt_robot/head_position/command')
+        self._gesture_topic = rospy.get_param('~gesture_topic', '/qt_robot/gesture/play')  
 
         self._joy_sub = rospy.Subscriber(self._joy_topic, Joy, self.joy_cmd_cb)
         self._joint_state_sub = rospy.Subscriber(self._joint_state_topic, JointState, self.joint_state_cb)
 
+        self._gesture_pub = rospy.Publisher(self._gesture_topic, String, queue_size=1)
         self._right_pub = rospy.Publisher(self._right_arm_topic, Float64MultiArray, queue_size=1)
         self._left_pub = rospy.Publisher(self._left_arm_topic, Float64MultiArray, queue_size=1)
         self._head_pub = rospy.Publisher(self._head_topic, Float64MultiArray, queue_size=1)
-
-        # wtime_begin = rospy.get_time()
-        # while (self.right_pub.get_num_connections() == 0 and self.left_pub.get_num_connections() == 0) :
-        #     rospy.loginfo("waiting for subscriber connections...")
-        #     if rospy.get_time() - wtime_begin > 10.0:
-        #         rospy.logerr("Timeout while waiting for subscribers connection!")
-        #         sys.exit()
-        #     rospy.sleep(1)
 
         self._last_joy_msg = None
         self._last_joy_buttons = None
@@ -90,10 +84,19 @@ class JoyNode(object):
         self._moving = False
 
     def map_value(self, min_val: float, max_val: float, middle_point: float, value_to_map: float, invert: bool=False):
-        # get coefficient for the linear function for the domain [-1, 1], which is joypad range
+        """Maps value_to_map in the range [-1,1] into value between min_val and max_val (linear interpolation). 
+            Middle_point is used as a point to split the target domain into two ranges [min_val, middle_point] and
+            [middle_point, max_val]. If the value_to_map is negative it will be mapped into range [min_val, middle_point], 
+            otherwise into [middle_point, max_val]. invert flag flips the order (e.g. negative value_to_map will be mapped
+            into range [middle_point, max_val]).
+        """
+        
         if max_val<=min_val:
             raise ValueError("max_val has to be greater than min_val")
-        
+
+        if value_to_map<-1 or value_to_map>1:
+            raise ValueError("value_to_map should be between -1 and 1")
+
         b = middle_point
 
         if (value_to_map > 0 and not invert) or (value_to_map < 0 and invert):
@@ -122,14 +125,28 @@ class JoyNode(object):
             return mapped_value
 
     def run(self):
-
+        """Maps joypad control into positions of the arms and head of the robot
+        """
         loop_rate = rospy.Rate(5)
+        
         while not rospy.is_shutdown():
             if self._last_joy_msg is None or self._last_joint_msg is None:
                 continue
 
             ref = Float64MultiArray()
-        
+
+            if self._last_joy_buttons.a:
+                self._gesture_pub.publish('QT/send_kiss')
+            
+            if self._last_joy_buttons.b:
+                self._gesture_pub.publish('QT/clapping')
+
+            if self._last_joy_buttons.x:
+                self._gesture_pub.publish('QT/hi')
+
+            if self._last_joy_buttons.y:
+                self._gesture_pub.publish('QT/one-arm-up')
+
             if (self._last_joy_buttons.rb or self._last_joy_buttons.lb) and \
                 (self._last_joy_axes.yl!=0 or self._last_joy_axes.xl!=0 or self._last_joy_axes.xr!=0):
                 self._moving = True

@@ -10,6 +10,6 @@
         <param name="right_arm_topic" value="/qt_robot/right_arm_position/command" />
         <param name="left_arm_topic" value="/qt_robot/left_arm_position/command" />
         <param name="head_topic" value="/qt_robot/head_position/command" />
-
+        <param name="gesture_topic" value="/qt_robot/gesture/play" />
     </node>
 </launch>
