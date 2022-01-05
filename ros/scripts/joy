@@ -230,6 +230,6 @@ class JoyNode(object):
 
 
 if __name__ == '__main__':
-    rospy.init_node('ropod_joy')
+    rospy.init_node('qtrobot_joy')
     joy = JoyNode()
     joy.run()
